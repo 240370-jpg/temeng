@@ -212,6 +212,8 @@
             display: flex;
             align-items: center;
             gap: 5px;
+            font-family: monospace;
+            font-weight: bold;
         }
 
         #groupList {
@@ -223,6 +225,17 @@
             text-align: center;
             padding: 40px;
             color: #9ca3af;
+        }
+
+        .timer-active {
+            color: #10b981;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0% { opacity: 1; }
+            50% { opacity: 0.6; }
+            100% { opacity: 1; }
         }
 
         @media (max-width: 640px) {
@@ -249,10 +262,10 @@
         </div>
         <button id="googleLoginBtn" class="btn-google" style="display: none;">🔐 Войти через Google</button>
         <div class="grid" id="statusButtons" style="display: none;">
-            <button class="btn-study" onclick="window.changeStatus('📚 Учусь', '#10b981')">📚 Учусь</button>
-            <button class="btn-coffee" onclick="window.changeStatus('☕ Кофе', '#f59e0b')">☕ Кофе</button>
-            <button class="btn-game" onclick="window.changeStatus('🎮 В игре', '#06b6d4')">🎮 В игре</button>
-            <button class="btn-home" onclick="window.changeStatus('🏠 Дома', '#6b7280')">🏠 Дома</button>
+            <button class="btn-study" id="studyBtn">📚 Учусь</button>
+            <button class="btn-coffee" id="coffeeBtn">☕ Кофе</button>
+            <button class="btn-game" id="gameBtn">🎮 В игре</button>
+            <button class="btn-home" id="homeBtn">🏠 Дома</button>
         </div>
     </div>
 
@@ -281,16 +294,45 @@
 
         let currentUser = null;
         let currentUserId = null;
-        let studyTimer = null;
-        let currentStudySessionId = null;
+        let studyTimerInterval = null;
+        let currentSessionStartTime = null;
+        let currentSessionId = null;
         let presenceInterval = null;
 
-        // Функция форматирования времени
-        function formatTime(seconds) {
-            const hours = Math.floor(seconds / 3600);
+        // Функция форматирования времени (дни, часы, минуты, секунды)
+        function formatTimeDetailed(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
             const minutes = Math.floor((seconds % 3600) / 60);
             const secs = seconds % 60;
-            return `${hours}ч ${minutes}м ${secs}с`;
+            
+            if (days > 0) {
+                return `${days}д ${hours}ч ${minutes}м ${secs}с`;
+            } else if (hours > 0) {
+                return `${hours}ч ${minutes}м ${secs}с`;
+            } else if (minutes > 0) {
+                return `${minutes}м ${secs}с`;
+            } else {
+                return `${secs}с`;
+            }
+        }
+
+        // Короткий формат для отображения
+        function formatTimeShort(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            
+            if (days > 0) {
+                return `${days}д ${hours}ч`;
+            } else if (hours > 0) {
+                return `${hours}ч ${minutes}м`;
+            } else if (minutes > 0) {
+                return `${minutes}м ${secs}с`;
+            } else {
+                return `${secs}с`;
+            }
         }
 
         // Экранирование HTML
@@ -306,13 +348,21 @@
 
         // Запуск таймера учёбы
         async function startStudyTimer() {
-            if (studyTimer) return;
+            if (studyTimerInterval) {
+                console.log('Таймер уже запущен');
+                return;
+            }
+            
+            console.log('Запуск таймера учёбы...');
+            
+            const now = new Date().toISOString();
+            currentSessionStartTime = now;
             
             const { data, error } = await supabase
                 .from('study_sessions')
                 .insert({
                     user_id: currentUserId,
-                    start_time: new Date().toISOString(),
+                    start_time: now,
                     duration_seconds: 0
                 })
                 .select()
@@ -320,43 +370,76 @@
             
             if (error) {
                 console.error('Ошибка создания сессии:', error);
+                alert('Ошибка запуска таймера: ' + error.message);
                 return;
             }
             
-            currentStudySessionId = data.id;
-            let seconds = 0;
+            currentSessionId = data.id;
+            console.log('Сессия создана:', currentSessionId);
             
-            studyTimer = setInterval(async () => {
-                seconds++;
-                if (seconds % 10 === 0) {
-                    await supabase
+            // Локальный счётчик для отображения
+            let localSeconds = 0;
+            
+            studyTimerInterval = setInterval(async () => {
+                localSeconds++;
+                
+                // Обновляем отображение в реальном времени
+                await updateMyInfo();
+                
+                // Сохраняем в БД каждые 10 секунд
+                if (localSeconds % 10 === 0 && currentSessionId) {
+                    const { error: updateError } = await supabase
                         .from('study_sessions')
-                        .update({ duration_seconds: seconds })
-                        .eq('id', currentStudySessionId);
+                        .update({ duration_seconds: localSeconds })
+                        .eq('id', currentSessionId);
+                    
+                    if (updateError) {
+                        console.error('Ошибка обновления сессии:', updateError);
+                    } else {
+                        console.log('Сохранено:', localSeconds, 'секунд');
+                    }
                 }
             }, 1000);
         }
 
         // Остановка таймера учёбы
         async function stopStudyTimer() {
-            if (!studyTimer) return;
+            if (!studyTimerInterval) {
+                console.log('Таймер не запущен');
+                return;
+            }
             
-            clearInterval(studyTimer);
-            studyTimer = null;
+            console.log('Остановка таймера учёбы...');
             
-            if (currentStudySessionId) {
+            clearInterval(studyTimerInterval);
+            studyTimerInterval = null;
+            
+            if (currentSessionId) {
+                // Получаем финальную длительность
                 const { data: session } = await supabase
                     .from('study_sessions')
                     .select('duration_seconds')
-                    .eq('id', currentStudySessionId)
+                    .eq('id', currentSessionId)
                     .single();
                 
-                await supabase
-                    .from('study_sessions')
-                    .update({ end_time: new Date().toISOString() })
-                    .eq('id', currentStudySessionId);
+                if (session) {
+                    const { error: updateError } = await supabase
+                        .from('study_sessions')
+                        .update({ 
+                            end_time: new Date().toISOString(),
+                            duration_seconds: session.duration_seconds
+                        })
+                        .eq('id', currentSessionId);
+                    
+                    if (updateError) {
+                        console.error('Ошибка завершения сессии:', updateError);
+                    } else {
+                        console.log('Сессия завершена, длительность:', session.duration_seconds);
+                    }
+                }
                 
-                currentStudySessionId = null;
+                currentSessionId = null;
+                currentSessionStartTime = null;
             }
         }
 
@@ -375,12 +458,12 @@
 
         // Проверка онлайн пользователей
         async function checkOnlineUsers() {
-            const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+            const thirtySecondsAgo = new Date(Date.now() - 30 * 1000).toISOString();
             
             const { data, error } = await supabase
                 .from('user_presence')
                 .select('user_id')
-                .gte('last_seen', fiveMinutesAgo);
+                .gte('last_seen', thirtySecondsAgo);
             
             if (error) {
                 console.error('Ошибка проверки онлайна:', error);
@@ -438,7 +521,7 @@
                                     '<span class="offline-badge">⚫ Оффлайн</span>'}
                             </div>
                             <div class="user-status">${user.status || 'Статус не задан'}</div>
-                            <div class="study-time">⏱ ${formatTime(totalTime)}</div>
+                            <div class="study-time">⏱ ${formatTimeShort(totalTime)}</div>
                         </div>
                     </div>
                 `;
@@ -458,32 +541,45 @@
                 .eq('id', currentUserId)
                 .single();
             
-            const { data: stats } = await supabase
+            // Получаем статистику
+            const { data: statsData } = await supabase
                 .from('user_study_stats')
                 .select('total_seconds')
                 .eq('user_id', currentUserId)
-                .single();
+                .maybeSingle();
             
-            const totalTime = stats?.total_seconds || 0;
+            let totalSeconds = statsData?.total_seconds || 0;
+            
+            // Если сейчас идёт сессия учёбы, добавляем текущее время
+            if (studyTimerInterval && currentSessionStartTime) {
+                const startTime = new Date(currentSessionStartTime);
+                const now = new Date();
+                const currentSessionSeconds = Math.floor((now - startTime) / 1000);
+                totalSeconds += currentSessionSeconds;
+            }
             
             if (error || !profile) {
                 myInfoDiv.innerHTML = `👤 Вы вошли как: ${currentUser?.email || currentUserId}<br>⚠️ Профиль не найден`;
                 return;
             }
             
+            const isStudyingNow = profile.status === '📚 Учусь';
+            
             myInfoDiv.innerHTML = `
                 <strong>👤 ${escapeHtml(profile.username)}</strong><br>
-                📍 Статус: ${profile.status || 'не задан'}<br>
-                ⏱ Всего учёбы: ${formatTime(totalTime)}
+                📍 Статус: ${profile.status || 'не задан'} ${isStudyingNow ? '<span style="color:#10b981;"> 🟢 (таймер активен)</span>' : ''}<br>
+                ⏱ Всего учёбы: <strong style="color:#3b82f6; font-family:monospace;">${formatTimeDetailed(totalSeconds)}</strong>
             `;
         }
 
         // Смена статуса
-        window.changeStatus = async (text, color) => {
+        async function changeStatus(text, color) {
             if (!currentUserId) {
                 alert('Сначала войдите в систему!');
                 return;
             }
+            
+            console.log('Смена статуса на:', text);
             
             const { data: oldProfile } = await supabase
                 .from('profiles')
@@ -493,12 +589,13 @@
             
             const oldStatus = oldProfile?.status;
             
-            // Если переключаемся на "Учусь"
+            // Логика таймера
             if (text === '📚 Учусь' && oldStatus !== '📚 Учусь') {
+                // Начинаем учёбу
                 await startStudyTimer();
             } 
-            // Если выходим из статуса "Учусь"
             else if (oldStatus === '📚 Учусь' && text !== '📚 Учусь') {
+                // Заканчиваем учёбу
                 await stopStudyTimer();
             }
             
@@ -511,10 +608,11 @@
                 alert("Ошибка! Проверьте RLS политики.");
                 console.error(error);
             } else {
+                console.log('Статус обновлён');
                 await fetchGroup();
                 await updateMyInfo();
             }
-        };
+        }
 
         // Проверка сессии
         async function checkSession() {
@@ -538,7 +636,7 @@
                     .from('profiles')
                     .select('id')
                     .eq('id', currentUserId)
-                    .single();
+                    .maybeSingle();
                 
                 if (!existingProfile) {
                     const username = currentUser.user_metadata?.full_name || 
@@ -559,15 +657,34 @@
                 if (presenceInterval) clearInterval(presenceInterval);
                 presenceInterval = setInterval(updatePresence, 30000);
                 
-                // Восстанавливаем таймер учёбы, если статус был "Учусь"
-                const { data: profile } = await supabase
-                    .from('profiles')
-                    .select('status')
-                    .eq('id', currentUserId)
-                    .single();
+                // Проверяем, была ли активная сессия учёбы
+                const { data: activeSession } = await supabase
+                    .from('study_sessions')
+                    .select('*')
+                    .eq('user_id', currentUserId)
+                    .is('end_time', null)
+                    .maybeSingle();
                 
-                if (profile?.status === '📚 Учусь') {
-                    await startStudyTimer();
+                if (activeSession) {
+                    console.log('Найдена активная сессия, восстанавливаем таймер');
+                    currentSessionId = activeSession.id;
+                    currentSessionStartTime = activeSession.start_time;
+                    
+                    // Восстанавливаем таймер
+                    let localSeconds = activeSession.duration_seconds || 0;
+                    
+                    studyTimerInterval = setInterval(async () => {
+                        localSeconds++;
+                        
+                        await updateMyInfo();
+                        
+                        if (localSeconds % 10 === 0 && currentSessionId) {
+                            await supabase
+                                .from('study_sessions')
+                                .update({ duration_seconds: localSeconds })
+                                .eq('id', currentSessionId);
+                        }
+                    }, 1000);
                 }
                 
                 await updateMyInfo();
@@ -580,6 +697,12 @@
                 await fetchGroup();
             }
         }
+
+        // Назначаем обработчики кнопок
+        document.getElementById('studyBtn')?.addEventListener('click', () => changeStatus('📚 Учусь', '#10b981'));
+        document.getElementById('coffeeBtn')?.addEventListener('click', () => changeStatus('☕ Кофе', '#f59e0b'));
+        document.getElementById('gameBtn')?.addEventListener('click', () => changeStatus('🎮 В игре', '#06b6d4'));
+        document.getElementById('homeBtn')?.addEventListener('click', () => changeStatus('🏠 Дома', '#6b7280'));
 
         // Вход через Google
         googleLoginBtn.addEventListener('click', async () => {
